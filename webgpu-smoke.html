@@ -1,0 +1,1134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WebGPU Smoke</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      overflow-y: auto;
+      background: #07070d;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      color: white;
+    }
+
+    .page {
+      position: relative;
+      z-index: 5;
+    }
+
+    .hero-section {
+      position: relative;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .contact-section {
+      position: relative;
+      padding: 80px 48px 100px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .contact-inner {
+      width: 100%;
+      max-width: 720px;
+    }
+
+    form {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 24px;
+    }
+
+    form .form-group {
+      grid-column: span 2;
+    }
+
+    @media (min-width: 640px) {
+      form .form-group.col-half {
+        grid-column: span 1;
+      }
+    }
+
+    .form-submit {
+      grid-column: span 2;
+      justify-self: start;
+    }
+
+    .contact-inner h2 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 8px;
+    }
+
+    .contact-inner > p {
+      color: rgba(255,255,255,0.4);
+      font-size: 0.9rem;
+      margin-bottom: 40px;
+      line-height: 1.6;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 0.8rem;
+      color: rgba(255,255,255,0.5);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .form-group input,
+    .form-group textarea {
+      width: 100%;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 14px;
+      padding: 14px 18px;
+      color: white;
+      font-family: inherit;
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .form-group input:focus,
+    .form-group textarea:focus {
+      border-color: rgba(255,255,255,0.3);
+    }
+
+    .form-group textarea {
+      resize: vertical;
+      min-height: 120px;
+    }
+
+    .form-submit {
+      margin-top: 28px;
+      background: white;
+      color: #07070d;
+      border: none;
+      border-radius: 100px;
+      padding: 14px 36px;
+      font-size: 1rem;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+    }
+
+    canvas {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw; height: 100vh;
+      z-index: 0;
+      cursor: crosshair;
+    }
+
+    nav {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 48px;
+      height: 64px;
+    }
+
+    .nav-logo {
+      font-size: 1.125rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 36px;
+      font-size: 0.875rem;
+      color: rgba(255,255,255,0.55);
+    }
+
+    .nav-links a {
+      text-decoration: none;
+      color: inherit;
+      transition: color 0.15s;
+    }
+
+    .nav-links a:hover { color: rgba(255,255,255,0.9); }
+
+    .nav-signin {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.12);
+      color: rgba(255,255,255,0.75);
+      padding: 8px 20px;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
+
+    .hero {
+      position: relative;
+      z-index: 10;
+      text-align: center;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 28px;
+    }
+
+    .hero-card {
+      display: inline-block;
+    }
+
+    .hero h1 {
+      font-size: clamp(6rem, 22vw, 24rem);
+      font-weight: 900;
+      letter-spacing: -0.04em;
+      line-height: 1;
+      margin-bottom: 0;
+      color: white;
+    }
+
+
+    .hero p {
+      font-size: clamp(0.9rem, 1.6vw, 1.05rem);
+      color: rgba(255,255,255,0.45);
+      max-width: 380px;
+      margin: 0 auto 0;
+      line-height: 1.65;
+    }
+
+    .hero-cta {
+      pointer-events: all;
+      display: inline-block;
+      background: white;
+      color: #07070d;
+      padding: 14px 36px;
+      border-radius: 100px;
+      font-size: 1rem;
+      font-weight: 600;
+      font-family: inherit;
+      letter-spacing: -0.01em;
+      border: none;
+      cursor: pointer;
+    }
+
+    .img-card {
+      position: absolute;
+      z-index: 8;
+      border-radius: 18px;
+      overflow: hidden;
+      cursor: grab;
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s;
+      user-select: none;
+      -webkit-user-select: none;
+      background: rgba(255,255,255,0.04);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    .img-card:hover {
+      transform: scale(1.1);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.7);
+      z-index: 9;
+    }
+    .img-card.dragging {
+      transform: scale(1.06) rotate(1deg);
+      cursor: grabbing;
+      transition: box-shadow 0.2s;
+      z-index: 12;
+    }
+    .img-card img {
+      width: 100%;
+      display: block;
+      pointer-events: none;
+    }
+    .img-card .card-caption {
+      padding: 10px 14px 12px;
+      font-size: 0.75rem;
+      color: rgba(255,255,255,0.5);
+      letter-spacing: 0.02em;
+      pointer-events: none;
+    }
+
+    #gui-panel {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 20;
+      background: rgba(10,10,18,0.75);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      padding: 18px 20px 16px;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      width: 220px;
+      font-size: 0.78rem;
+      color: rgba(255,255,255,0.55);
+    }
+    #gui-panel h3 {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.3);
+      margin-bottom: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    #gui-panel h3 .gui-toggle {
+      font-size: 0.65rem;
+      opacity: 0.5;
+      transition: transform 0.2s;
+    }
+    #gui-panel.collapsed h3 .gui-toggle {
+      transform: rotate(-90deg);
+    }
+    #gui-panel.collapsed h3 {
+      margin-bottom: 0;
+    }
+    #gui-body {
+      overflow: hidden;
+      transition: max-height 0.25s ease, opacity 0.2s;
+      max-height: 400px;
+      opacity: 1;
+    }
+    #gui-panel.collapsed #gui-body {
+      max-height: 0;
+      opacity: 0;
+    }
+    .gui-row {
+      margin-bottom: 12px;
+    }
+    .gui-row label {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 5px;
+      color: rgba(255,255,255,0.5);
+    }
+    .gui-row label span {
+      color: rgba(255,255,255,0.25);
+      font-variant-numeric: tabular-nums;
+    }
+    .gui-row input[type=range] {
+      width: 100%;
+      accent-color: rgba(180,200,255,0.8);
+      cursor: pointer;
+    }
+    .gui-row select {
+      width: 100%;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px;
+      color: rgba(255,255,255,0.7);
+      font-family: inherit;
+      font-size: 0.78rem;
+      padding: 5px 8px;
+      cursor: pointer;
+      outline: none;
+    }
+    .gui-divider {
+      border: none;
+      border-top: 1px solid rgba(255,255,255,0.07);
+      margin: 14px 0;
+    }
+
+    #error {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 20;
+      color: #f66;
+      font-family: monospace;
+      font-size: 0.9rem;
+      text-align: center;
+      white-space: pre-line;
+      background: rgba(0,0,0,0.85);
+      padding: 28px 36px;
+      border-radius: 12px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<div class="page">
+  <nav id="nav" data-obstacle>
+    <div class="nav-logo">acme</div>
+    <div class="nav-links">
+      <a href="#">Product</a>
+      <a href="#">Docs</a>
+      <a href="#">Pricing</a>
+      <a href="#">Blog</a>
+    </div>
+    <button class="nav-signin">Sign in</button>
+  </nav>
+
+  <section class="hero-section">
+    <div class="img-card" data-obstacle style="top:10vh;left:2vw;width:160px">
+      <img src="https://picsum.photos/seed/fluid1/320/260" width="160" alt="">
+      <div class="card-caption">Surface tension</div>
+    </div>
+    <div class="img-card" data-obstacle style="top:8vh;right:2vw;width:190px">
+      <img src="https://picsum.photos/seed/fluid2/380/280" width="190" alt="">
+      <div class="card-caption">Laminar flow</div>
+    </div>
+    <div class="img-card" data-obstacle style="top:56vh;left:2vw;width:155px">
+      <img src="https://picsum.photos/seed/fluid3/310/240" width="155" alt="">
+      <div class="card-caption">Vortex ring</div>
+    </div>
+    <div class="img-card" data-obstacle style="top:54vh;right:2vw;width:175px">
+      <img src="https://picsum.photos/seed/fluid4/350/260" width="175" alt="">
+      <div class="card-caption">Reynolds number</div>
+    </div>
+    <div class="hero">
+      <div class="hero-card" id="hero-card">
+        <h1>FLUID</h1>
+      </div>
+      <button class="hero-cta" id="hero-cta" data-obstacle>Get started &rarr;</button>
+    </div>
+  </section>
+
+  <section class="contact-section">
+    <div class="contact-inner">
+      <h2>Get in touch</h2>
+      <p>We'd love to hear from you. Fill out the form and we'll be in touch shortly.</p>
+
+      <form>
+        <div class="form-group col-half">
+          <label for="fc-name">Name</label>
+          <input type="text" id="fc-name" placeholder="Your name" data-obstacle />
+        </div>
+        <div class="form-group col-half">
+          <label for="fc-email">Email</label>
+          <input type="email" id="fc-email" placeholder="you@example.com" data-obstacle />
+        </div>
+        <div class="form-group">
+          <label for="fc-subject">Subject</label>
+          <input type="text" id="fc-subject" placeholder="What's this about?" data-obstacle />
+        </div>
+        <div class="form-group">
+          <label for="fc-message">Message</label>
+          <textarea id="fc-message" placeholder="Tell us more…" data-obstacle></textarea>
+        </div>
+        <button type="submit" class="form-submit" data-obstacle>Send message &rarr;</button>
+      </form>
+    </div>
+  </section>
+</div>
+
+<div id="error"></div>
+
+<div id="gui-panel" class="collapsed">
+  <h3 id="gui-header">Controls <span class="gui-toggle">▼</span></h3>
+
+  <div id="gui-body">
+  <div class="gui-row">
+    <label>Smoke intensity <span id="lbl-si">1.55</span></label>
+    <input type="range" id="sl-si" min="0.2" max="5" step="0.05" value="1.55">
+  </div>
+  <hr class="gui-divider">
+  <div class="gui-row">
+    <label>Algorithm</label>
+    <select id="sl-mode">
+      <option value="0">None</option>
+      <option value="1">Bayer 4×4</option>
+      <option value="2">Bayer 2×2</option>
+      <option value="3">Bayer 8×8</option>
+      <option value="4" selected>White noise</option>
+    </select>
+  </div>
+  <div class="gui-row">
+    <label>Colours <span id="lbl-dc">7</span></label>
+    <input type="range" id="sl-dc" min="2" max="32" step="1" value="7">
+  </div>
+  <div class="gui-row">
+    <label>Amount <span id="lbl-da">0.15</span></label>
+    <input type="range" id="sl-da" min="0" max="0.5" step="0.01" value="0.15">
+  </div>
+  <div class="gui-row">
+    <label>Scale <span id="lbl-ds">1</span>px</label>
+    <input type="range" id="sl-ds" min="1" max="8" step="1" value="1">
+  </div>
+  </div>
+</div>
+
+<script>
+const W = 256;
+const MAX_H = 512; // tallest H we allocate for (handles portrait)
+const DT = 0.05;
+const VISCOSITY = 0.0001;
+const PRESSURE_ITERS = 12;
+const MAX_OBSTACLES = 32;
+
+const gui = { smokeIntensity: 1.55, ditherAmt: 0.15, ditherScale: 1.0, ditherColors: 7.0, ditherMode: 4.0 };
+
+async function main() {
+  const adapter = await navigator.gpu?.requestAdapter();
+  if (!adapter) return showError("WebGPU not supported.\nTry Chrome 113+ or Edge 113+.");
+
+  const device = await adapter.requestDevice();
+  const canvas = document.getElementById("canvas");
+  const context = canvas.getContext("webgpu");
+  const format = navigator.gpu.getPreferredCanvasFormat();
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    context.configure({ device, format, alphaMode: "opaque" });
+  }
+  resize();
+  window.addEventListener("resize", resize);
+
+  // H scales with aspect ratio so grid cells are square on screen
+  const H = Math.min(MAX_H, Math.max(64, Math.round(W * canvas.height / canvas.width)));
+
+  function makeBuffer(floatCount) {
+    return device.createBuffer({
+      size: floatCount * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  const maxCells = W * MAX_H;
+  const densA    = makeBuffer(maxCells);
+  const densB    = makeBuffer(maxCells);
+  const velA     = makeBuffer(maxCells * 2);
+  const velB     = makeBuffer(maxCells * 2);
+  const div      = makeBuffer(maxCells);
+  const pressure  = makeBuffer(maxCells);
+  const pressureB = makeBuffer(maxCells);
+
+  // [cx, cy, hw, hh, radius, 0, 0, 0] per obstacle in grid coords
+  const obstacleBuffer = device.createBuffer({
+    size: MAX_OBSTACLES * 8 * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  // Hero text pixel mask (canvas2D → grid)
+  const heroMaskBuf = device.createBuffer({
+    size: W * MAX_H * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  // 20 floats = 80 bytes
+  const uniformBuffer = device.createBuffer({
+    size: 96,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
+  function writeUniforms(iX, iY, iVX, iVY, iR, eX, eY, eR, nObs) {
+    device.queue.writeBuffer(uniformBuffer, 0, new Float32Array([
+      W, H, DT, VISCOSITY,
+      iX, iY, iVX, iVY,
+      iR, eX, eY, eR,
+      canvas.width, canvas.height, nObs, 0,
+      gui.smokeIntensity, gui.ditherAmt, gui.ditherScale, 0,
+      gui.ditherColors, gui.ditherMode, 0, 0,
+    ]));
+  }
+  writeUniforms(0, 0, 0, 0, 0, 0, 0, 0, 0);
+
+  function buildHeroMask() {
+    const h1 = document.querySelector('.hero h1');
+    if (!h1) return;
+    const rect  = h1.getBoundingClientRect();
+    if (rect.width === 0) return;
+    const style = getComputedStyle(h1);
+    const fontSizePx   = parseFloat(style.fontSize);
+    const lineHeightPx = fontSizePx * 0.95;
+
+    // Render at full screen resolution, then scale to grid
+    const big = document.createElement('canvas');
+    big.width  = canvas.width;
+    big.height = canvas.height;
+    const ctx  = big.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle    = 'white';
+    ctx.font         = `800 ${fontSizePx}px system-ui, sans-serif`;
+    ctx.letterSpacing = `${-0.04 * fontSizePx}px`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'top';
+    const cx = rect.left + rect.width / 2;
+    ctx.fillText('FLUID', cx, rect.top);
+
+    // Scale down to grid
+    const small = document.createElement('canvas');
+    small.width  = W;
+    small.height = H;
+    small.getContext('2d').drawImage(big, 0, 0, canvas.width, canvas.height, 0, 0, W, H);
+    const { data } = small.getContext('2d').getImageData(0, 0, W, H);
+
+    const mask = new Float32Array(W * H);
+    for (let gy = 0; gy < H; gy++) {
+      for (let gx = 0; gx < W; gx++) {
+        const cy = H - 1 - gy; // flip Y: grid 0=bottom, canvas 0=top
+        mask[gy * W + gx] = data[(cy * W + gx) * 4 + 3] > 32 ? 1.0 : 0.0;
+      }
+    }
+    device.queue.writeBuffer(heroMaskBuf, 0, mask);
+  }
+
+  // Build after layout settles; rebuild on scroll/resize since rect is viewport-relative
+  requestAnimationFrame(() => requestAnimationFrame(buildHeroMask));
+  window.addEventListener('resize', buildHeroMask);
+  window.addEventListener('scroll', buildHeroMask, { passive: true });
+
+  function writeObstacles() {
+    const els = document.querySelectorAll("[data-obstacle]");
+    const data = new Float32Array(MAX_OBSTACLES * 8);
+    let n = 0;
+    const sx = W / canvas.width;
+    const sy = H / canvas.height; // ≈ sx since cells are square
+    for (const el of els) {
+      if (n >= MAX_OBSTACLES) break;
+      const r = el.getBoundingClientRect();
+      const radiusPx = Math.min(
+        parseFloat(getComputedStyle(el).borderRadius) || 0,
+        r.width / 2, r.height / 2
+      );
+      const hw = r.width  / 2 * sx;
+      const hh = r.height / 2 * sy;
+      const b = n * 8;
+      data[b + 0] = (r.left + r.width  / 2) * sx;           // cx grid
+      data[b + 1] = (canvas.height - r.top - r.height / 2) * sy; // cy grid (flipped Y)
+      data[b + 2] = hw;
+      data[b + 3] = hh;
+      data[b + 4] = Math.min(radiusPx * sx, hw, hh);         // radius grid
+      n++;
+    }
+    device.queue.writeBuffer(obstacleBuffer, 0, data);
+    return n;
+  }
+
+  // ── Shared WGSL ──────────────────────────────────────────────────────────
+  const sharedWGSL = /* wgsl */`
+    struct Uniforms {
+      w            : f32,
+      h            : f32,
+      dt           : f32,
+      viscosity    : f32,
+      impulseX     : f32,
+      impulseY     : f32,
+      impulseVX    : f32,
+      impulseVY    : f32,
+      impulseRadius: f32,
+      emitX        : f32,
+      emitY        : f32,
+      emitRadius   : f32,
+      canvasW      : f32,
+      canvasH      : f32,
+      numObstacles : f32,
+      _pad         : f32,
+      smokeIntensity: f32,
+      ditherAmt     : f32,
+      ditherScale   : f32,
+      _pad2         : f32,
+      ditherColors  : f32,
+      ditherMode    : f32,
+      _pad3         : f32,
+      _pad4         : f32,
+    };
+    @group(0) @binding(0) var<uniform> u : Uniforms;
+
+    fn idx(x: i32, y: i32) -> u32 {
+      let cx = clamp(x, 0, i32(u.w) - 1);
+      let cy = clamp(y, 0, i32(u.h) - 1);
+      return u32(cy) * u32(u.w) + u32(cx);
+    }
+  `;
+
+  // ── Advect density ───────────────────────────────────────────────────────
+  const advectShader = /* wgsl */`
+    ${sharedWGSL}
+    @group(0) @binding(1) var<storage, read>       srcField : array<f32>;
+    @group(0) @binding(2) var<storage, read>       velField : array<f32>;
+    @group(0) @binding(3) var<storage, read_write> dstField : array<f32>;
+
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+
+      let i2 = idx(x, y) * 2u;
+      let vx = velField[i2]; let vy = velField[i2 + 1u];
+      let px = f32(x) - vx * u.dt;
+      let py = f32(y) - vy * u.dt;
+
+      let x0 = i32(floor(px)); let y0 = i32(floor(py));
+      let x1 = x0 + 1;        let y1 = y0 + 1;
+      let fx = px - f32(x0);  let fy = py - f32(y0);
+      let v00 = srcField[idx(x0,y0)]; let v10 = srcField[idx(x1,y0)];
+      let v01 = srcField[idx(x0,y1)]; let v11 = srcField[idx(x1,y1)];
+      dstField[idx(x,y)] = mix(mix(v00,v10,fx), mix(v01,v11,fx), fy);
+    }
+  `;
+
+  // ── Advect velocity ──────────────────────────────────────────────────────
+  const advectVelShader = /* wgsl */`
+    ${sharedWGSL}
+    @group(0) @binding(1) var<storage, read>       srcVel : array<f32>;
+    @group(0) @binding(2) var<storage, read_write> dstVel : array<f32>;
+
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+
+      let i2 = idx(x,y) * 2u;
+      let vx = srcVel[i2]; let vy = srcVel[i2+1u];
+      let px = f32(x) - vx * u.dt;
+      let py = f32(y) - vy * u.dt;
+
+      let x0 = i32(floor(px)); let y0 = i32(floor(py));
+      let x1 = x0 + 1;        let y1 = y0 + 1;
+      let fx = px - f32(x0);  let fy = py - f32(y0);
+
+      let vx00 = srcVel[idx(x0,y0)*2u];    let vx10 = srcVel[idx(x1,y0)*2u];
+      let vx01 = srcVel[idx(x0,y1)*2u];    let vx11 = srcVel[idx(x1,y1)*2u];
+      let vy00 = srcVel[idx(x0,y0)*2u+1u]; let vy10 = srcVel[idx(x1,y0)*2u+1u];
+      let vy01 = srcVel[idx(x0,y1)*2u+1u]; let vy11 = srcVel[idx(x1,y1)*2u+1u];
+
+      dstVel[i2]    = mix(mix(vx00,vx10,fx), mix(vx01,vx11,fx), fy);
+      dstVel[i2+1u] = mix(mix(vy00,vy10,fx), mix(vy01,vy11,fx), fy);
+    }
+  `;
+
+  // ── Add smoke + impulse ──────────────────────────────────────────────────
+  const addSmokeShader = /* wgsl */`
+    ${sharedWGSL}
+    @group(0) @binding(1) var<storage, read_write> dens : array<f32>;
+    @group(0) @binding(2) var<storage, read_write> vel  : array<f32>;
+
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+
+      if (u.emitRadius > 0.0) {
+        let ex = f32(x) - u.emitX; let ey = f32(y) - u.emitY;
+        let d  = sqrt(ex*ex + ey*ey);
+        if (d < u.emitRadius) {
+          let f = 1.0 - d / u.emitRadius;
+          dens[idx(x,y)] = min(dens[idx(x,y)] + f * 0.18, 1.0);
+          vel[idx(x,y)*2u + 1u] += f * 2.2;
+        }
+      }
+
+      if (u.impulseRadius > 0.0) {
+        let ex = f32(x) - u.impulseX; let ey = f32(y) - u.impulseY;
+        let d  = sqrt(ex*ex + ey*ey);
+        if (d < u.impulseRadius) {
+          let f = exp(-d*d / (u.impulseRadius*u.impulseRadius*0.5));
+          let i2 = idx(x,y) * 2u;
+          vel[i2]    += u.impulseVX * f * 3.0;
+          vel[i2+1u] += u.impulseVY * f * 3.0;
+        }
+      }
+
+      let i2 = idx(x,y) * 2u;
+      vel[i2]    *= 0.998;
+      vel[i2+1u] *= 0.998;
+      dens[idx(x,y)] *= 0.995;
+    }
+  `;
+
+  // ── Divergence ───────────────────────────────────────────────────────────
+  const divergenceShader = /* wgsl */`
+    ${sharedWGSL}
+    @group(0) @binding(1) var<storage, read>       vel  : array<f32>;
+    @group(0) @binding(2) var<storage, read_write> divOut : array<f32>;
+    @group(0) @binding(3) var<storage, read_write> pres : array<f32>;
+
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+
+      let vR = vel[idx(x+1,y  )*2u    ];
+      let vL = vel[idx(x-1,y  )*2u    ];
+      let vU = vel[idx(x,  y+1)*2u+1u ];
+      let vD = vel[idx(x,  y-1)*2u+1u ];
+      divOut[idx(x,y)] = (vR - vL + vU - vD) * 0.5;
+      pres[idx(x,y)]   = 0.0;
+    }
+  `;
+
+  // ── Pressure Jacobi iteration ────────────────────────────────────────────
+  const pressureShader = /* wgsl */`
+    ${sharedWGSL}
+    @group(0) @binding(1) var<storage, read>       divIn   : array<f32>;
+    @group(0) @binding(2) var<storage, read>       presIn  : array<f32>;
+    @group(0) @binding(3) var<storage, read_write> presOut : array<f32>;
+
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+
+      let pR = presIn[idx(x+1,y  )];
+      let pL = presIn[idx(x-1,y  )];
+      let pU = presIn[idx(x,  y+1)];
+      let pD = presIn[idx(x,  y-1)];
+      presOut[idx(x,y)] = (pR + pL + pU + pD - divIn[idx(x,y)]) / 4.0;
+    }
+  `;
+
+  // ── Subtract pressure gradient ───────────────────────────────────────────
+  const subtractPressureShader = /* wgsl */`
+    ${sharedWGSL}
+    @group(0) @binding(1) var<storage, read>       pres : array<f32>;
+    @group(0) @binding(2) var<storage, read_write> vel  : array<f32>;
+
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+
+      let dpx = (pres[idx(x+1,y)] - pres[idx(x-1,y)]) * 0.5;
+      let dpy = (pres[idx(x,y+1)] - pres[idx(x,y-1)]) * 0.5;
+      let i2 = idx(x,y) * 2u;
+      vel[i2]    -= dpx;
+      vel[i2+1u] -= dpy;
+    }
+  `;
+
+  // ── Boundary enforcement: zero vel + dens inside obstacle rects ──────────
+  const boundaryShader = /* wgsl */`
+    ${sharedWGSL}
+    @group(0) @binding(1) var<storage, read_write> dens     : array<f32>;
+    @group(0) @binding(2) var<storage, read_write> vel      : array<f32>;
+    @group(0) @binding(3) var<storage, read>       obs      : array<f32>;
+    @group(0) @binding(4) var<storage, read>       heroMask : array<f32>;
+
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+
+      let p = vec2f(f32(x), f32(y));
+      let n = i32(u.numObstacles);
+      var inside = false;
+      for (var i = 0; i < n; i++) {
+        let b = u32(i * 8);
+        let center = vec2f(obs[b], obs[b+1u]);
+        let half   = vec2f(obs[b+2u], obs[b+3u]);
+        let r      = obs[b+4u];
+        let q  = abs(p - center) - half + r;
+        let sd = length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0) - r;
+        if (sd <= 0.0) { inside = true; }
+      }
+      if (heroMask[idx(x,y)] > 0.5) { inside = true; }
+
+      if (inside) {
+        let i2 = idx(x,y) * 2u;
+        vel[i2] = 0.0; vel[i2+1u] = 0.0;
+        dens[idx(x,y)] = 0.0;
+      }
+    }
+  `;
+
+  // ── Render ───────────────────────────────────────────────────────────────
+  const renderShader = /* wgsl */`
+    ${sharedWGSL}
+    @group(0) @binding(1) var<storage, read> dens : array<f32>;
+
+    @vertex
+    fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
+      var pos = array<vec2f, 3>(
+        vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0)
+      );
+      return vec4f(pos[vi], 0.0, 1.0);
+    }
+
+    fn bayer4(p: vec2i) -> f32 {
+      let m = array<f32, 16>(
+         0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
+        12.0/16.0,  4.0/16.0, 14.0/16.0,  6.0/16.0,
+         3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0,
+        15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0,
+      );
+      let q = p & vec2i(3, 3);
+      return m[q.y * 4 + q.x] - 0.5;
+    }
+
+    fn bayer2(p: vec2i) -> f32 {
+      let m = array<f32, 4>(0.0/4.0, 2.0/4.0, 3.0/4.0, 1.0/4.0);
+      let q = p & vec2i(1, 1);
+      return m[q.y * 2 + q.x] - 0.5;
+    }
+
+    fn bayer8(p: vec2i) -> f32 {
+      let m = array<f32, 64>(
+         0.0/64.0, 32.0/64.0,  8.0/64.0, 40.0/64.0,  2.0/64.0, 34.0/64.0, 10.0/64.0, 42.0/64.0,
+        48.0/64.0, 16.0/64.0, 56.0/64.0, 24.0/64.0, 50.0/64.0, 18.0/64.0, 58.0/64.0, 26.0/64.0,
+        12.0/64.0, 44.0/64.0,  4.0/64.0, 36.0/64.0, 14.0/64.0, 46.0/64.0,  6.0/64.0, 38.0/64.0,
+        60.0/64.0, 28.0/64.0, 52.0/64.0, 20.0/64.0, 62.0/64.0, 30.0/64.0, 54.0/64.0, 22.0/64.0,
+         3.0/64.0, 35.0/64.0, 11.0/64.0, 43.0/64.0,  1.0/64.0, 33.0/64.0,  9.0/64.0, 41.0/64.0,
+        51.0/64.0, 19.0/64.0, 59.0/64.0, 27.0/64.0, 49.0/64.0, 17.0/64.0, 57.0/64.0, 25.0/64.0,
+        15.0/64.0, 47.0/64.0,  7.0/64.0, 39.0/64.0, 13.0/64.0, 45.0/64.0,  5.0/64.0, 37.0/64.0,
+        63.0/64.0, 31.0/64.0, 55.0/64.0, 23.0/64.0, 61.0/64.0, 29.0/64.0, 53.0/64.0, 21.0/64.0,
+      );
+      let q = p & vec2i(7, 7);
+      return m[q.y * 8 + q.x] - 0.5;
+    }
+
+    fn whiteNoise(p: vec2i) -> f32 {
+      var n = u32(p.x * 1619 + p.y * 31337 + 7919);
+      n = (n ^ (n >> 13u)) * 1274126177u;
+      n = n ^ (n >> 16u);
+      return f32(n & 0xFFFFu) / 65535.0 - 0.5;
+    }
+
+    fn getDither(px: vec2i) -> f32 {
+      let scale = max(u.ditherScale, 1.0);
+      let p = vec2i(i32(f32(px.x) / scale), i32(f32(px.y) / scale));
+      let mode = i32(u.ditherMode);
+      if (mode == 1) { return bayer4(p);   }
+      if (mode == 2) { return bayer2(p);   }
+      if (mode == 3) { return bayer8(p);   }
+      if (mode == 4) { return whiteNoise(p); }
+      return 0.0;
+    }
+
+    @fragment
+    fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+      let gx = i32(pos.x / (u.canvasW / u.w));
+      let gy = i32((u.canvasH - pos.y) / (u.canvasH / u.h));
+      let d  = dens[idx(gx, gy)];
+
+      let dither = getDither(vec2i(i32(pos.x), i32(pos.y))) * u.ditherAmt;
+      let levels = max(u.ditherColors, 2.0);
+      let raw    = d * u.smokeIntensity + dither;
+      let t      = clamp(floor(raw * levels) / (levels - 1.0), 0.0, 1.0);
+
+      let bg  = vec3f(0.027, 0.027, 0.051);
+      let col = vec3f(0.72, 0.80, 1.0);
+      return vec4f(mix(bg, col, t), 1.0);
+    }
+  `;
+
+  // ── Compile pipelines ────────────────────────────────────────────────────
+  function makeComputePipeline(wgsl) {
+    return device.createComputePipeline({
+      layout: "auto",
+      compute: { module: device.createShaderModule({ code: wgsl }), entryPoint: "main" },
+    });
+  }
+
+  const pipelines = {
+    addSmoke:    makeComputePipeline(addSmokeShader),
+    advectDens:  makeComputePipeline(advectShader),
+    advectVel:   makeComputePipeline(advectVelShader),
+    divergence:  makeComputePipeline(divergenceShader),
+    pressure:    makeComputePipeline(pressureShader),
+    subPressure: makeComputePipeline(subtractPressureShader),
+    boundary:    makeComputePipeline(boundaryShader),
+  };
+
+  const renderModule = device.createShaderModule({ code: renderShader });
+  const renderPipeline = device.createRenderPipeline({
+    layout: "auto",
+    vertex:    { module: renderModule, entryPoint: "vs_main" },
+    fragment:  { module: renderModule, entryPoint: "fs_main", targets: [{ format }] },
+    primitive: { topology: "triangle-list" },
+  });
+
+  function makeBG(pipeline, buffers) {
+    return device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: buffers.map((buf, i) => ({ binding: i, resource: { buffer: buf } })),
+    });
+  }
+
+  // ── Input ─────────────────────────────────────────────────────────────────
+  let mouse = { x: 0, y: 0, px: 0, py: 0, down: false };
+
+  window.addEventListener("mousemove", e => {
+    mouse.px = mouse.x; mouse.py = mouse.y;
+    mouse.x = e.clientX / canvas.width  * W;
+    mouse.y = (1 - e.clientY / canvas.height) * H;
+  });
+  window.addEventListener("mousedown", () => mouse.down = true);
+  window.addEventListener("mouseup",   () => mouse.down = false);
+
+  window.addEventListener("touchmove", e => {
+    e.preventDefault();
+    const t = e.touches[0];
+    mouse.px = mouse.x; mouse.py = mouse.y;
+    mouse.x = t.clientX / canvas.width  * W;
+    mouse.y = (1 - t.clientY / canvas.height) * H;
+    mouse.down = true;
+  }, { passive: false });
+  window.addEventListener("touchend", () => mouse.down = false);
+
+  // ── Render loop ───────────────────────────────────────────────────────────
+  let ping = true;
+  let emitter = { x: W/2, y: 8, radius: 0, framesLeft: 0, cooldown: 10 };
+  let lastFrameTime = 0;
+  const FRAME_BUDGET = 1000 / 60; // cap at 60 fps so physics speed is browser-agnostic
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (now - lastFrameTime < FRAME_BUDGET * 0.85) return;
+    lastFrameTime = now;
+
+    emitter.cooldown--;
+    if (emitter.cooldown <= 0) {
+      emitter.x = 14 + Math.random() * (W - 28);
+      emitter.y = 8;
+      const pxPerCell = canvas.width / W;
+      const minR = Math.max(10, 50 / pxPerCell);
+      const maxR = Math.min(W * 0.35, Math.max(minR + 12, 180 / pxPerCell));
+      emitter.radius = minR + Math.random() * (maxR - minR);
+      emitter.framesLeft = 18 + Math.floor(Math.random() * 20);
+      emitter.cooldown   = 55 + Math.floor(Math.random() * 60);
+    }
+    const emitActive = emitter.framesLeft > 0;
+    if (emitActive) emitter.framesLeft--;
+
+    const numObs = writeObstacles();
+
+    const dvx = mouse.down ? (mouse.x - mouse.px) * 3 : 0;
+    const dvy = mouse.down ? (mouse.y - mouse.py) * 3 : 0;
+    writeUniforms(
+      mouse.x, mouse.y, dvx, dvy,
+      mouse.down ? 10.0 : 0.0,
+      emitter.x, emitter.y,
+      emitActive ? emitter.radius : 0.0,
+      numObs,
+    );
+
+    const [dSrc, dDst] = ping ? [densA, densB] : [densB, densA];
+    const [vSrc, vDst] = ping ? [velA,  velB]  : [velB,  velA];
+    ping = !ping;
+
+    const enc = device.createCommandEncoder();
+    const wx = Math.ceil(W / 8);
+    const wy = Math.ceil(H / 8);
+
+    function compute(pipeline, bg) {
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(wx, wy);
+      pass.end();
+    }
+
+    compute(pipelines.addSmoke,    makeBG(pipelines.addSmoke,    [uniformBuffer, dSrc, vSrc]));
+    compute(pipelines.advectVel,   makeBG(pipelines.advectVel,   [uniformBuffer, vSrc, vDst]));
+    compute(pipelines.advectDens,  makeBG(pipelines.advectDens,  [uniformBuffer, dSrc, vDst, dDst]));
+    compute(pipelines.divergence,  makeBG(pipelines.divergence,  [uniformBuffer, vDst, div, pressure]));
+
+    let pIn = pressure, pOut = pressureB;
+    for (let i = 0; i < PRESSURE_ITERS; i++) {
+      compute(pipelines.pressure, makeBG(pipelines.pressure, [uniformBuffer, div, pIn, pOut]));
+      [pIn, pOut] = [pOut, pIn];
+    }
+
+    compute(pipelines.subPressure, makeBG(pipelines.subPressure, [uniformBuffer, pIn, vDst]));
+    compute(pipelines.boundary,    makeBG(pipelines.boundary,    [uniformBuffer, dDst, vDst, obstacleBuffer, heroMaskBuf]));
+
+    const renderPass = enc.beginRenderPass({
+      colorAttachments: [{
+        view: context.getCurrentTexture().createView(),
+        clearValue: { r: 0.027, g: 0.027, b: 0.051, a: 1 },
+        loadOp: "clear",
+        storeOp: "store",
+      }],
+    });
+    renderPass.setPipeline(renderPipeline);
+    renderPass.setBindGroup(0, makeBG(renderPipeline, [uniformBuffer, dDst]));
+    renderPass.draw(3);
+    renderPass.end();
+
+    device.queue.submit([enc.finish()]);
+  }
+
+  frame();
+}
+
+function showError(msg) {
+  document.getElementById("error").style.display = "block";
+  document.getElementById("error").textContent = msg;
+}
+
+main().catch(e => showError("Error: " + e.message));
+
+// GUI collapse toggle
+document.getElementById('gui-header').addEventListener('click', () => {
+  document.getElementById('gui-panel').classList.toggle('collapsed');
+});
+
+// GUI panel sliders
+(function () {
+  function bind(sliderId, labelId, key, fmt) {
+    const sl = document.getElementById(sliderId);
+    const lb = document.getElementById(labelId);
+    sl.addEventListener('input', () => {
+      gui[key] = parseFloat(sl.value);
+      lb.textContent = fmt(gui[key]);
+    });
+  }
+  bind('sl-si', 'lbl-si', 'smokeIntensity', v => v.toFixed(2));
+  bind('sl-dc', 'lbl-dc', 'ditherColors',   v => v.toFixed(0));
+  bind('sl-da', 'lbl-da', 'ditherAmt',      v => v.toFixed(2));
+  bind('sl-ds', 'lbl-ds', 'ditherScale',    v => v.toFixed(0));
+
+  document.getElementById('sl-mode').addEventListener('change', e => {
+    gui.ditherMode = parseFloat(e.target.value);
+  });
+}());
+
+// draggable image cards
+(function () {
+  let dragCard = null, ox = 0, oy = 0;
+
+  document.querySelectorAll('.img-card').forEach(card => {
+    card.addEventListener('mousedown', e => {
+      dragCard = card;
+      const r = card.getBoundingClientRect();
+      ox = e.clientX - r.left;
+      oy = e.clientY - r.top;
+      // lift to fixed for smooth viewport-relative dragging
+      card.style.position = 'fixed';
+      card.style.left   = r.left + 'px';
+      card.style.top    = r.top  + 'px';
+      card.style.right  = 'auto';
+      card.style.bottom = 'auto';
+      card.classList.add('dragging');
+      e.preventDefault();
+    });
+  });
+
+  window.addEventListener('mousemove', e => {
+    if (!dragCard) return;
+    dragCard.style.left = (e.clientX - ox) + 'px';
+    dragCard.style.top  = (e.clientY - oy) + 'px';
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (dragCard) {
+      // stay fixed wherever dropped
+      dragCard.classList.remove('dragging');
+      dragCard = null;
+    }
+  });
+}());
+</script>
+</body>
+</html>

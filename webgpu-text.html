@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebGPU Text Smoke</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #07070d; overflow: hidden; font-family: system-ui, sans-serif; }
+    canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; cursor: crosshair; }
+    #text-input {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    #text-input input {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 100px;
+      color: white;
+      font-size: 0.9rem;
+      font-family: inherit;
+      padding: 8px 20px;
+      outline: none;
+      text-align: center;
+      letter-spacing: 0.08em;
+      width: 220px;
+    }
+    #text-input input::placeholder { color: rgba(255,255,255,0.2); }
+    #text-input button {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 100px;
+      color: rgba(255,255,255,0.6);
+      font-family: inherit;
+      font-size: 0.8rem;
+      padding: 8px 18px;
+      cursor: pointer;
+    }
+    #error {
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%,-50%);
+      color: #f66; font-family: monospace;
+      text-align: center; white-space: pre-line;
+      background: rgba(0,0,0,0.85);
+      padding: 28px 36px; border-radius: 12px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="text-input">
+  <input type="text" id="text-field" value="FLUID" placeholder="type something" maxlength="12">
+  <button id="apply-btn">Apply</button>
+</div>
+<div id="error"></div>
+<script>
+const W = 256;
+const MAX_H = 512;
+const DT = 0.05;
+const VISCOSITY = 0.0001;
+const PRESSURE_ITERS = 16;
+
+async function main() {
+  const canvas = document.getElementById('canvas');
+
+  if (!navigator.gpu) { showError('WebGPU not supported.\nUse Chrome 113+ or Firefox Nightly.'); return; }
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) { showError('No WebGPU adapter.'); return; }
+  const device = await adapter.requestDevice();
+
+  const context = canvas.getContext('webgpu');
+  const format  = navigator.gpu.getPreferredCanvasFormat();
+
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+  context.configure({ device, format, alphaMode: 'opaque' });
+
+  const H = Math.min(MAX_H, Math.max(64, Math.round(W * canvas.height / canvas.width)));
+
+  const maxCells = W * MAX_H;
+  function makeBuffer(n) {
+    return device.createBuffer({ size: n * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  }
+
+  const densA     = makeBuffer(maxCells);
+  const densB     = makeBuffer(maxCells);
+  const velA      = makeBuffer(maxCells * 2);
+  const velB      = makeBuffer(maxCells * 2);
+  const div       = makeBuffer(maxCells);
+  const pressure  = makeBuffer(maxCells);
+  const pressureB = makeBuffer(maxCells);
+  const maskBuf   = makeBuffer(maxCells);
+
+  const uniformBuf = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  function writeUniforms(iX, iY, iVX, iVY, iR) {
+    device.queue.writeBuffer(uniformBuf, 0, new Float32Array([
+      W, H, DT, VISCOSITY,
+      iX, iY, iVX, iVY,
+      iR, 0, 0, 0,
+      canvas.width, canvas.height, 0, 0,
+    ]));
+  }
+  writeUniforms(0, 0, 0, 0, 0);
+
+  // ── Text → mask ──────────────────────────────────────────────────────────
+  function buildMask(text) {
+    const off = document.createElement('canvas');
+    off.width  = W;
+    off.height = H;
+    const ctx = off.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+
+    let size = Math.floor(H * 0.55);
+    ctx.font = `900 ${size}px 'Arial Black', Impact, system-ui, sans-serif`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+
+    // shrink until it fits
+    while (ctx.measureText(text).width > W * 0.92 && size > 6) {
+      size -= 2;
+      ctx.font = `900 ${size}px 'Arial Black', Impact, system-ui, sans-serif`;
+    }
+
+    ctx.fillStyle = 'white';
+    ctx.fillText(text, W / 2, H / 2);
+
+    const { data } = ctx.getImageData(0, 0, W, H);
+    const mask = new Float32Array(W * H);
+    for (let gy = 0; gy < H; gy++) {
+      for (let gx = 0; gx < W; gx++) {
+        // grid Y=0 is bottom; canvas Y=0 is top — flip
+        const cy    = H - 1 - gy;
+        const alpha = data[(cy * W + gx) * 4 + 3];
+        mask[gy * W + gx] = alpha > 64 ? 1.0 : 0.0;
+      }
+    }
+    device.queue.writeBuffer(maskBuf, 0, mask);
+  }
+
+  buildMask(document.getElementById('text-field').value || 'FLUID');
+
+  document.getElementById('apply-btn').addEventListener('click', () => {
+    buildMask(document.getElementById('text-field').value || 'FLUID');
+  });
+  document.getElementById('text-field').addEventListener('keydown', e => {
+    if (e.key === 'Enter') buildMask(e.target.value || 'FLUID');
+  });
+
+  // ── Shared WGSL ──────────────────────────────────────────────────────────
+  const shared = /* wgsl */`
+    struct Uniforms {
+      w: f32, h: f32, dt: f32, viscosity: f32,
+      impulseX: f32, impulseY: f32, impulseVX: f32, impulseVY: f32,
+      impulseRadius: f32, _p0: f32, _p1: f32, _p2: f32,
+      canvasW: f32, canvasH: f32, _p3: f32, _p4: f32,
+    };
+    @group(0) @binding(0) var<uniform> u: Uniforms;
+    fn idx(x: i32, y: i32) -> u32 {
+      return u32(clamp(y, 0, i32(u.h)-1) * i32(u.w) + clamp(x, 0, i32(u.w)-1));
+    }
+  `;
+
+  // ── Shaders ───────────────────────────────────────────────────────────────
+  const addSmokeShader = /* wgsl */`
+    ${shared}
+    @group(0) @binding(1) var<storage, read_write> dens: array<f32>;
+    @group(0) @binding(2) var<storage, read_write> vel:  array<f32>;
+
+    @compute @workgroup_size(8,8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+
+      // Uniform bottom-strip emitter — whole row rises as a curtain
+      if (y < 14) {
+        let f = f32(14 - y) / 14.0;
+        dens[idx(x,y)] = min(dens[idx(x,y)] + f * 0.12, 1.0);
+        vel[idx(x,y)*2u+1u] += f * 1.8;
+      }
+
+      // Mouse impulse
+      if (u.impulseRadius > 0.0) {
+        let ex = f32(x) - u.impulseX;
+        let ey = f32(y) - u.impulseY;
+        let d  = sqrt(ex*ex + ey*ey);
+        if (d < u.impulseRadius) {
+          let f  = exp(-d*d / (u.impulseRadius*u.impulseRadius*0.5));
+          let i2 = idx(x,y) * 2u;
+          vel[i2]    += u.impulseVX * f * 3.0;
+          vel[i2+1u] += u.impulseVY * f * 3.0;
+        }
+      }
+
+      let i2 = idx(x,y) * 2u;
+      vel[i2]    *= 0.998;
+      vel[i2+1u] *= 0.998;
+      dens[idx(x,y)] *= 0.996;
+    }
+  `;
+
+  const advectVelShader = /* wgsl */`
+    ${shared}
+    @group(0) @binding(1) var<storage, read>       srcVel: array<f32>;
+    @group(0) @binding(2) var<storage, read_write> dstVel: array<f32>;
+
+    @compute @workgroup_size(8,8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+      let i2 = idx(x,y)*2u;
+      let px = f32(x) - srcVel[i2]   * u.dt;
+      let py = f32(y) - srcVel[i2+1u]* u.dt;
+      let x0 = i32(floor(px)); let y0 = i32(floor(py));
+      let x1 = x0+1;           let y1 = y0+1;
+      let fx = px-f32(x0);     let fy = py-f32(y0);
+      dstVel[i2]    = mix(mix(srcVel[idx(x0,y0)*2u],   srcVel[idx(x1,y0)*2u],   fx),
+                          mix(srcVel[idx(x0,y1)*2u],   srcVel[idx(x1,y1)*2u],   fx), fy);
+      dstVel[i2+1u] = mix(mix(srcVel[idx(x0,y0)*2u+1u],srcVel[idx(x1,y0)*2u+1u],fx),
+                          mix(srcVel[idx(x0,y1)*2u+1u],srcVel[idx(x1,y1)*2u+1u],fx), fy);
+    }
+  `;
+
+  const advectDensShader = /* wgsl */`
+    ${shared}
+    @group(0) @binding(1) var<storage, read>       srcDens: array<f32>;
+    @group(0) @binding(2) var<storage, read>       vel:     array<f32>;
+    @group(0) @binding(3) var<storage, read_write> dstDens: array<f32>;
+
+    @compute @workgroup_size(8,8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+      let i2 = idx(x,y)*2u;
+      let px = f32(x) - vel[i2]   * u.dt;
+      let py = f32(y) - vel[i2+1u]* u.dt;
+      let x0 = i32(floor(px)); let y0 = i32(floor(py));
+      let x1 = x0+1;           let y1 = y0+1;
+      let fx = px-f32(x0);     let fy = py-f32(y0);
+      dstDens[idx(x,y)] = mix(mix(srcDens[idx(x0,y0)],srcDens[idx(x1,y0)],fx),
+                               mix(srcDens[idx(x0,y1)],srcDens[idx(x1,y1)],fx), fy);
+    }
+  `;
+
+  const divergenceShader = /* wgsl */`
+    ${shared}
+    @group(0) @binding(1) var<storage, read>       vel: array<f32>;
+    @group(0) @binding(2) var<storage, read_write> dv:  array<f32>;
+    @group(0) @binding(3) var<storage, read_write> prs: array<f32>;
+
+    @compute @workgroup_size(8,8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+      dv[idx(x,y)]  = -0.5*(vel[idx(x+1,y)*2u]-vel[idx(x-1,y)*2u]+
+                             vel[idx(x,y+1)*2u+1u]-vel[idx(x,y-1)*2u+1u]);
+      prs[idx(x,y)] = 0.0;
+    }
+  `;
+
+  const pressureShader = /* wgsl */`
+    ${shared}
+    @group(0) @binding(1) var<storage, read>       dv:   array<f32>;
+    @group(0) @binding(2) var<storage, read>       pIn:  array<f32>;
+    @group(0) @binding(3) var<storage, read_write> pOut: array<f32>;
+
+    @compute @workgroup_size(8,8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+      pOut[idx(x,y)] = (pIn[idx(x-1,y)]+pIn[idx(x+1,y)]+
+                        pIn[idx(x,y-1)]+pIn[idx(x,y+1)]+dv[idx(x,y)])*0.25;
+    }
+  `;
+
+  const subPressureShader = /* wgsl */`
+    ${shared}
+    @group(0) @binding(1) var<storage, read>       prs: array<f32>;
+    @group(0) @binding(2) var<storage, read_write> vel: array<f32>;
+
+    @compute @workgroup_size(8,8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+      let i2 = idx(x,y)*2u;
+      vel[i2]    -= 0.5*(prs[idx(x+1,y)]-prs[idx(x-1,y)]);
+      vel[i2+1u] -= 0.5*(prs[idx(x,y+1)]-prs[idx(x,y-1)]);
+    }
+  `;
+
+  const boundaryShader = /* wgsl */`
+    ${shared}
+    @group(0) @binding(1) var<storage, read_write> dens: array<f32>;
+    @group(0) @binding(2) var<storage, read_write> vel:  array<f32>;
+    @group(0) @binding(3) var<storage, read>       mask: array<f32>;
+
+    @compute @workgroup_size(8,8)
+    fn main(@builtin(global_invocation_id) gid: vec3u) {
+      let x = i32(gid.x); let y = i32(gid.y);
+      if (x >= i32(u.w) || y >= i32(u.h)) { return; }
+      if (mask[idx(x,y)] > 0.5) {
+        let i2 = idx(x,y)*2u;
+        vel[i2] = 0.0; vel[i2+1u] = 0.0;
+        dens[idx(x,y)] = 0.0;
+      }
+    }
+  `;
+
+  const renderShader = /* wgsl */`
+    ${shared}
+    @group(0) @binding(1) var<storage, read> dens: array<f32>;
+    @group(0) @binding(2) var<storage, read> mask: array<f32>;
+
+    fn bayer(p: vec2i) -> f32 {
+      let m = array<f32,16>(
+         0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
+        12.0/16.0,  4.0/16.0, 14.0/16.0,  6.0/16.0,
+         3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0,
+        15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0,
+      );
+      let q = p & vec2i(3,3);
+      return m[q.y*4+q.x] - 0.5;
+    }
+
+    @vertex
+    fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
+      var p = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+      return vec4f(p[vi], 0.0, 1.0);
+    }
+
+    @fragment
+    fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+      let gx = i32(pos.x / (u.canvasW / u.w));
+      let gy = i32((u.canvasH - pos.y) / (u.canvasH / u.h));
+      let d  = dens[idx(gx, gy)];
+      let m  = mask[idx(gx, gy)];
+
+      let dither = bayer(vec2i(i32(pos.x), i32(pos.y))) * 0.06;
+      let t      = clamp(d * 1.8 + dither, 0.0, 1.0);
+
+      let bg  = vec3f(0.027, 0.027, 0.051);
+      let col = vec3f(0.72,  0.80,  1.0);
+
+      // Text cells: faint glow so letters are legible before smoke fills in
+      if (m > 0.5) {
+        return vec4f(mix(bg, col, t * 0.05 + 0.02), 1.0);
+      }
+      return vec4f(mix(bg, col, t), 1.0);
+    }
+  `;
+
+  // ── Pipelines ─────────────────────────────────────────────────────────────
+  function computePipeline(code) {
+    return device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: device.createShaderModule({ code }), entryPoint: 'main' },
+    });
+  }
+
+  const pipelines = {
+    addSmoke:    computePipeline(addSmokeShader),
+    advectVel:   computePipeline(advectVelShader),
+    advectDens:  computePipeline(advectDensShader),
+    divergence:  computePipeline(divergenceShader),
+    pressure:    computePipeline(pressureShader),
+    subPressure: computePipeline(subPressureShader),
+    boundary:    computePipeline(boundaryShader),
+  };
+
+  const renderMod = device.createShaderModule({ code: renderShader });
+  const renderPipeline = device.createRenderPipeline({
+    layout: 'auto',
+    vertex:   { module: renderMod, entryPoint: 'vs_main' },
+    fragment: { module: renderMod, entryPoint: 'fs_main', targets: [{ format }] },
+    primitive: { topology: 'triangle-list' },
+  });
+
+  function bg(pipeline, bufs) {
+    return device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: bufs.map((buffer, binding) => ({ binding, resource: { buffer } })),
+    });
+  }
+
+  // ── Input ─────────────────────────────────────────────────────────────────
+  const mouse = { x: 0, y: 0, px: 0, py: 0, down: false };
+  canvas.addEventListener('mousedown',  e => { mouse.px = e.clientX/canvas.width*W; mouse.py = (1-e.clientY/canvas.height)*H; mouse.down = true; });
+  canvas.addEventListener('mousemove',  e => { mouse.px = mouse.x; mouse.py = mouse.y; mouse.x = e.clientX/canvas.width*W; mouse.y = (1-e.clientY/canvas.height)*H; });
+  window.addEventListener('mouseup', () => mouse.down = false);
+  canvas.addEventListener('touchstart', e => { e.preventDefault(); const t=e.touches[0]; mouse.px=t.clientX/canvas.width*W; mouse.py=(1-t.clientY/canvas.height)*H; mouse.down=true; }, { passive:false });
+  canvas.addEventListener('touchmove',  e => { e.preventDefault(); const t=e.touches[0]; mouse.px=mouse.x; mouse.py=mouse.y; mouse.x=t.clientX/canvas.width*W; mouse.y=(1-t.clientY/canvas.height)*H; }, { passive:false });
+  window.addEventListener('touchend', () => mouse.down = false);
+
+  // ── Render loop ───────────────────────────────────────────────────────────
+  let ping = true;
+  let lastTime = 0;
+  const BUDGET = 1000 / 60;
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (now - lastTime < BUDGET * 0.85) return;
+    lastTime = now;
+
+    const dvx = mouse.down ? (mouse.x - mouse.px) * 3 : 0;
+    const dvy = mouse.down ? (mouse.y - mouse.py) * 3 : 0;
+    writeUniforms(mouse.x, mouse.y, dvx, dvy, mouse.down ? 10.0 : 0.0);
+
+    const [dSrc, dDst] = ping ? [densA, densB] : [densB, densA];
+    const [vSrc, vDst] = ping ? [velA,  velB]  : [velB,  velA];
+    ping = !ping;
+
+    const enc = device.createCommandEncoder();
+    const wx  = Math.ceil(W / 8);
+    const wy  = Math.ceil(H / 8);
+
+    function compute(pipeline, bufs) {
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bg(pipeline, bufs));
+      pass.dispatchWorkgroups(wx, wy);
+      pass.end();
+    }
+
+    compute(pipelines.addSmoke,    [uniformBuf, dSrc, vSrc]);
+    compute(pipelines.advectVel,   [uniformBuf, vSrc, vDst]);
+    compute(pipelines.advectDens,  [uniformBuf, dSrc, vDst, dDst]);
+    compute(pipelines.divergence,  [uniformBuf, vDst, div, pressure]);
+
+    let pIn = pressure, pOut = pressureB;
+    for (let i = 0; i < PRESSURE_ITERS; i++) {
+      compute(pipelines.pressure, [uniformBuf, div, pIn, pOut]);
+      [pIn, pOut] = [pOut, pIn];
+    }
+
+    compute(pipelines.subPressure, [uniformBuf, pIn, vDst]);
+    compute(pipelines.boundary,    [uniformBuf, dDst, vDst, maskBuf]);
+
+    const view = context.getCurrentTexture().createView();
+    const rpass = enc.beginRenderPass({
+      colorAttachments: [{ view, loadOp: 'clear', clearValue: { r:.027,g:.027,b:.051,a:1 }, storeOp: 'store' }],
+    });
+    rpass.setPipeline(renderPipeline);
+    rpass.setBindGroup(0, bg(renderPipeline, [uniformBuf, dDst, maskBuf]));
+    rpass.draw(3);
+    rpass.end();
+
+    device.queue.submit([enc.finish()]);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+function showError(msg) {
+  const el = document.getElementById('error');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+main().catch(e => showError('Error: ' + e.message));
+</script>
+</body>
+</html>
