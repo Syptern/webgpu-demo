@@ -191,7 +191,7 @@
     .hero h1 {
       font-size: clamp(6rem, 22vw, 24rem);
       font-weight: 900;
-      letter-spacing: -0.04em;
+      letter-spacing: 0.05em;
       line-height: 1;
       margin-bottom: 0;
       color: white;
@@ -560,7 +560,7 @@ async function main() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle    = 'white';
     ctx.font         = `800 ${fontSizePx}px system-ui, sans-serif`;
-    ctx.letterSpacing = `${-0.04 * fontSizePx}px`;
+    ctx.letterSpacing = `${0.05 * fontSizePx}px`;
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'top';
     const cx = rect.left + rect.width / 2;
@@ -714,6 +714,13 @@ async function main() {
     @group(0) @binding(1) var<storage, read_write> dens : array<f32>;
     @group(0) @binding(2) var<storage, read_write> vel  : array<f32>;
 
+    fn nhash(x: i32, y: i32) -> f32 {
+      var n = u32(x * 1619 + y * 31337 + 7919);
+      n = (n ^ (n >> 13u)) * 1274126177u;
+      n = n ^ (n >> 16u);
+      return f32(n & 0xFFFFu) / 65535.0 - 0.5;
+    }
+
     @compute @workgroup_size(8, 8)
     fn main(@builtin(global_invocation_id) gid: vec3u) {
       let x = i32(gid.x); let y = i32(gid.y);
@@ -723,9 +730,12 @@ async function main() {
         let ex = f32(x) - u.emitX; let ey = f32(y) - u.emitY;
         let d  = sqrt(ex*ex + ey*ey);
         if (d < u.emitRadius) {
-          let f = 1.0 - d / u.emitRadius;
+          let f  = 1.0 - d / u.emitRadius;
+          let nx = nhash(x, y);
+          let ny = nhash(x + 7, y + 13);
           dens[idx(x,y)] = min(dens[idx(x,y)] + f * 0.18, 1.0);
-          vel[idx(x,y)*2u + 1u] += f * 2.2;
+          vel[idx(x,y)*2u]      += nx * f * 1.4;
+          vel[idx(x,y)*2u + 1u] += (ny * 0.4 + 1.0) * f * 2.2;
         }
       }
 
