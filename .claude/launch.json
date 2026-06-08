@@ -3,9 +3,10 @@
   "configurations": [
     {
       "name": "webgpu-demo",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "7788"],
-      "port": 7788
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["server.js"],
+      "port": 7788,
+      "autoPort": true
     }
   ]
 }

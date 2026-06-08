@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebGPU Particles</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #04040e; overflow: hidden; font-family: 'Inter', system-ui, sans-serif; }
+    canvas { display: block; }
+
+    #title {
+      position: fixed;
+      top: 32px;
+      left: 40px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.2);
+      pointer-events: none;
+    }
+
+    #perf {
+      position: fixed;
+      top: 32px;
+      right: 40px;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.1em;
+      color: rgba(255, 255, 255, 0.25);
+      pointer-events: none;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #hint {
+      position: fixed;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 12px;
+      letter-spacing: 0.1em;
+      color: rgba(255, 255, 255, 0.2);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    #error {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #ff5555;
+      font-family: monospace;
+      font-size: 16px;
+      text-align: center;
+      line-height: 1.8;
+      display: none;
+    }
+
+    .vignette {
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(ellipse at center, transparent 40%, rgba(4, 4, 14, 0.65) 100%);
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<div class="vignette"></div>
+<div id="title">WebGPU Particles</div>
+<div id="perf">-- fps</div>
+<div id="hint">Move to repel &nbsp;&bull;&nbsp; Click to attract</div>
+<div id="error"></div>
+
+<script>
+const NUM_PARTICLES = 1000000;
+
+async function main() {
+  if (!navigator.gpu) {
+    showError('WebGPU not supported.\nTry Chrome 113+ or Edge 113+.');
+    return;
+  }
+
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  if (!adapter) { showError('No WebGPU adapter available.'); return; }
+
+  const device = await adapter.requestDevice();
+  const canvas = document.getElementById('canvas');
+  const gpuCtx = canvas.getContext('webgpu');
+  const format = navigator.gpu.getPreferredCanvasFormat();
+
+  let W = 0, H = 0;
+
+  function resize() {
+    const dpr = devicePixelRatio;
+    W = Math.floor(window.innerWidth * dpr);
+    H = Math.floor(window.innerHeight * dpr);
+    canvas.width = W;
+    canvas.height = H;
+    canvas.style.width  = window.innerWidth  + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    gpuCtx.configure({ device, format, alphaMode: 'opaque' });
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // ── Particle buffer ──────────────────────────────────────────────────────
+  // Per particle: pos(2) vel(2) home(2) seed(2) = 8 floats = 32 bytes
+  const STRIDE = 8;
+  const pData  = new Float32Array(NUM_PARTICLES * STRIDE);
+
+  for (let i = 0; i < NUM_PARTICLES; i++) {
+    const b = i * STRIDE;
+    const x = Math.random() * W;
+    const y = Math.random() * H;
+    pData[b+0] = x;
+    pData[b+1] = y;
+    pData[b+2] = 0;
+    pData[b+3] = 0;
+    pData[b+4] = x;
+    pData[b+5] = y;
+    pData[b+6] = Math.random() * 1000;
+    pData[b+7] = Math.random() * 1000;
+  }
+
+  const particleBuf = device.createBuffer({
+    size: pData.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(particleBuf, 0, pData);
+
+  // ── Uniform buffers ──────────────────────────────────────────────────────
+  // Compute: mouse(2) dt time size(2) repelRadius repelStrength = 8f = 32b
+  const cuData = new Float32Array(8);
+  const cuBuf  = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  // Render: size(2) particleSize time = 4f = 16b
+  const ruData = new Float32Array(4);
+  const ruBuf  = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+  // ── Compute shader ───────────────────────────────────────────────────────
+  const computeCode = /* wgsl */`
+struct Particle {
+  pos  : vec2f,
+  vel  : vec2f,
+  home : vec2f,
+  seed : vec2f,
+}
+
+struct CU {
+  mouse         : vec2f,
+  dt            : f32,
+  time          : f32,
+  canvasSize    : vec2f,
+  repelRadius   : f32,
+  repelStrength : f32,
+}
+
+@group(0) @binding(0) var<storage, read_write> particles : array<Particle>;
+@group(0) @binding(1) var<uniform>             u         : CU;
+
+@compute @workgroup_size(64)
+fn cs(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= arrayLength(&particles)) { return; }
+  var p = particles[i];
+
+  // Mouse force (repel or attract depending on sign of repelStrength)
+  let diff = p.pos - u.mouse;
+  let dist = length(diff);
+  if (dist < u.repelRadius && dist > 1.0) {
+    let t     = 1.0 - dist / u.repelRadius;
+    let force = t * t * u.repelStrength;
+    p.vel += normalize(diff) * force * u.dt;
+  }
+
+  // Soft spring toward resting home position
+  let toHome   = p.home - p.pos;
+  let homeDist = length(toHome);
+  if (homeDist > 1.0) {
+    p.vel += normalize(toHome) * min(homeDist * 0.6, 120.0) * u.dt;
+  }
+
+  // Organic per-particle drift via sin noise
+  let t  = u.time;
+  let nx = sin(p.seed.x * 12.9898 + t * 1.4) * cos(p.seed.y *  4.1414 + t * 0.7);
+  let ny = cos(p.seed.x * 78.2330 + t * 1.1) * sin(p.seed.y *  5.3219 + t * 0.9);
+  p.vel += vec2f(nx, ny) * 25.0 * u.dt;
+
+  // Damping
+  p.vel *= max(0.0, 1.0 - 2.0 * u.dt);
+
+  // Speed cap
+  let spd = length(p.vel);
+  if (spd > 800.0) { p.vel = p.vel / spd * 800.0; }
+
+  p.pos += p.vel * u.dt;
+
+  // Wrap at canvas edges
+  let W = u.canvasSize.x;
+  let H = u.canvasSize.y;
+  p.pos.x = ((p.pos.x % W) + W) % W;
+  p.pos.y = ((p.pos.y % H) + H) % H;
+
+  particles[i] = p;
+}
+`;
+
+  // ── Render shader ────────────────────────────────────────────────────────
+  const renderCode = /* wgsl */`
+struct Particle {
+  pos  : vec2f,
+  vel  : vec2f,
+  home : vec2f,
+  seed : vec2f,
+}
+
+struct RU {
+  canvasSize   : vec2f,
+  particleSize : f32,
+  time         : f32,
+}
+
+@group(0) @binding(0) var<storage, read> particles : array<Particle>;
+@group(0) @binding(1) var<uniform>       u         : RU;
+
+var<private> quad: array<vec2f, 6> = array<vec2f, 6>(
+  vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0, 1.0),
+  vec2f(-1.0,  1.0), vec2f(1.0, -1.0), vec2f( 1.0, 1.0),
+);
+
+struct Vout {
+  @builtin(position) pos   : vec4f,
+  @location(0)       uv    : vec2f,
+  @location(1)       speed : f32,
+}
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> Vout {
+  let p     = particles[ii];
+  let q     = quad[vi];
+  let speed = length(p.vel);
+  let sz    = u.particleSize * (1.0 + clamp(speed / 500.0, 0.0, 1.5));
+  let pixel = p.pos + q * sz;
+  let ndc   = vec2f(
+     pixel.x / u.canvasSize.x *  2.0 - 1.0,
+     pixel.y / u.canvasSize.y * -2.0 + 1.0,
+  );
+  var out: Vout;
+  out.pos   = vec4f(ndc, 0.0, 1.0);
+  out.uv    = (q + 1.0) * 0.5;
+  out.speed = speed;
+  return out;
+}
+
+@fragment
+fn fs(in: Vout) -> @location(0) vec4f {
+  let d = distance(in.uv, vec2f(0.5));
+  if (d > 0.5) { discard; }
+
+  let core  = 1.0 - smoothstep(0.0, 0.15, d);
+  let glow  = 1.0 - smoothstep(0.05, 0.5, d);
+  let alpha = core + glow * 0.35;
+
+  // Indigo at rest -> cyan -> white at max speed
+  let t   = clamp(in.speed / 350.0, 0.0, 1.0);
+  let t3  = t * t * t;
+  let c0  = vec3f(0.12, 0.14, 0.90);
+  let c1  = vec3f(0.05, 0.85, 1.00);
+  let c2  = vec3f(1.00, 1.00, 1.00);
+  let col = mix(mix(c0, c1, t), c2, t3);
+
+  return vec4f(col, alpha * 0.35);
+}
+`;
+
+  // ── Pipelines ────────────────────────────────────────────────────────────
+  const computePipeline = device.createComputePipeline({
+    layout:  'auto',
+    compute: { module: device.createShaderModule({ code: computeCode }), entryPoint: 'cs' },
+  });
+
+  const renderPipeline = device.createRenderPipeline({
+    layout:   'auto',
+    vertex:   { module: device.createShaderModule({ code: renderCode }), entryPoint: 'vs' },
+    fragment: {
+      module:     device.createShaderModule({ code: renderCode }),
+      entryPoint: 'fs',
+      targets: [{
+        format,
+        blend: {
+          color: { srcFactor: 'src-alpha', dstFactor: 'one', operation: 'add' },
+          alpha: { srcFactor: 'zero',      dstFactor: 'one', operation: 'add' },
+        },
+      }],
+    },
+    primitive: { topology: 'triangle-list' },
+  });
+
+  // ── Bind groups ──────────────────────────────────────────────────────────
+  const computeBG = device.createBindGroup({
+    layout:  computePipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: particleBuf } },
+      { binding: 1, resource: { buffer: cuBuf } },
+    ],
+  });
+
+  const renderBG = device.createBindGroup({
+    layout:  renderPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: particleBuf } },
+      { binding: 1, resource: { buffer: ruBuf } },
+    ],
+  });
+
+  // ── Input ────────────────────────────────────────────────────────────────
+  let mouseX = -99999;
+  let mouseY = -99999;
+  let attract = false;
+
+  function onMove(cx, cy) {
+    mouseX = cx * devicePixelRatio;
+    mouseY = cy * devicePixelRatio;
+  }
+
+  canvas.addEventListener('mousemove',  e => onMove(e.clientX, e.clientY));
+  canvas.addEventListener('mousedown',  () => { attract = true; });
+  canvas.addEventListener('mouseup',    () => { attract = false; });
+  canvas.addEventListener('mouseleave', () => { mouseX = -99999; mouseY = -99999; attract = false; });
+  canvas.addEventListener('touchmove',  e => { e.preventDefault(); onMove(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+  canvas.addEventListener('touchstart', e => { attract = true;  onMove(e.touches[0].clientX, e.touches[0].clientY); }, { passive: false });
+  canvas.addEventListener('touchend',   () => { attract = false; mouseX = -99999; mouseY = -99999; });
+
+  // ── Loop ─────────────────────────────────────────────────────────────────
+  let last = performance.now();
+
+  // FPS tracking
+  const perfEl = document.getElementById('perf');
+  let frameTimes = [];
+  let perfTick = 0;
+
+  function frame() {
+    const now = performance.now();
+    const dt  = Math.min((now - last) * 0.001, 1 / 30);
+    frameTimes.push(now - last);
+    if (frameTimes.length > 60) frameTimes.shift();
+    if (++perfTick % 20 === 0) {
+      const avg = frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length;
+      const fps = (1000 / avg).toFixed(0);
+      const ms  = avg.toFixed(1);
+      perfEl.textContent = `${fps} fps · ${ms} ms`;
+    }
+    last = now;
+
+    const dpr = devicePixelRatio;
+
+    cuData[0] = mouseX;
+    cuData[1] = mouseY;
+    cuData[2] = dt;
+    cuData[3] = now * 0.001;
+    cuData[4] = W;
+    cuData[5] = H;
+    cuData[6] = 180 * dpr;
+    cuData[7] = attract ? -3500 : 2500;
+    device.queue.writeBuffer(cuBuf, 0, cuData);
+
+    ruData[0] = W;
+    ruData[1] = H;
+    ruData[2] = 1.1 * dpr;
+    ruData[3] = now * 0.001;
+    device.queue.writeBuffer(ruBuf, 0, ruData);
+
+    const enc = device.createCommandEncoder();
+
+    const cp = enc.beginComputePass();
+    cp.setPipeline(computePipeline);
+    cp.setBindGroup(0, computeBG);
+    cp.dispatchWorkgroups(Math.ceil(NUM_PARTICLES / 64));
+    cp.end();
+
+    const rp = enc.beginRenderPass({
+      colorAttachments: [{
+        view:       gpuCtx.getCurrentTexture().createView(),
+        clearValue: { r: 0.016, g: 0.016, b: 0.055, a: 1.0 },
+        loadOp:     'clear',
+        storeOp:    'store',
+      }],
+    });
+    rp.setPipeline(renderPipeline);
+    rp.setBindGroup(0, renderBG);
+    rp.draw(6, NUM_PARTICLES);
+    rp.end();
+
+    device.queue.submit([enc.finish()]);
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+function showError(msg) {
+  const el = document.getElementById('error');
+  el.innerHTML = msg.replace(/\n/g, '<br>');
+  el.style.display = 'block';
+}
+
+main().catch(e => showError(e.message || String(e)));
+</script>
+</body>
+</html>

@@ -209,22 +209,21 @@
                 window.addEventListener("resize", resize);
 
                 // ── Particle buffer ──────────────────────────────────────────────────────
-                // Per particle: pos(2) vel(2) home(2) seed(2) = 8 floats = 32 bytes
+                // Per particle: pos(2) vel(2) home(2) seed(2). Only pos/vel used.
                 const STRIDE = 8;
                 const pData = new Float32Array(MAX_PARTICLES * STRIDE);
 
                 for (let i = 0; i < MAX_PARTICLES; i++) {
                     const b = i * STRIDE;
-                    const x = Math.random() * W;
-                    const y = Math.random() * H;
-                    pData[b + 0] = x;
-                    pData[b + 1] = y;
-                    pData[b + 2] = 0;
-                    pData[b + 3] = 0;
-                    pData[b + 4] = x;
-                    pData[b + 5] = y;
-                    pData[b + 6] = Math.random() * 1000;
-                    pData[b + 7] = Math.random() * 1000;
+                    // Scatter in a small disk around screen center
+                    const a = Math.random() * Math.PI * 2;
+                    const rad = Math.sqrt(Math.random()) * Math.min(W, H) * 0.2;
+                    pData[b + 0] = W * 0.5 + Math.cos(a) * rad; // pos.x
+                    pData[b + 1] = H * 0.5 + Math.sin(a) * rad; // pos.y
+                    pData[b + 2] = 0; // vel.x
+                    pData[b + 3] = 0; // vel.y
+                    pData[b + 6] = Math.random() * 1000; // seed.x (jitter phase)
+                    pData[b + 7] = Math.random() * 1000; // seed.y
                 }
 
                 const particleBuf = device.createBuffer({
@@ -234,30 +233,32 @@
                 device.queue.writeBuffer(particleBuf, 0, pData);
 
                 // ── Uniform buffers ──────────────────────────────────────────────────────
-                // Compute: canvasSize(2) dt time scale flowSpeed damping sink speedCap
-                //          morphSpeed mouse(2) attract
+                // Compute: canvasSize(2) dt time scale flowSpeed damping _ speedCap
+                //          morphSpeed
                 const cuData = new Float32Array(16); // padded to 64b
                 const cuBuf = device.createBuffer({
                     size: 64,
                     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
                 });
 
-                // Render: canvasSize(2) particleSize brightness time
-                const ruData = new Float32Array(8); // padded to 32b
+                // Render: canvasSize(2) particleSize brightness
+                const ruData = new Float32Array(4); // 16b
                 const ruBuf = device.createBuffer({
-                    size: 32,
+                    size: 16,
                     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
                 });
 
                 // ── Live-tunable parameters (driven by the GUI) ──────────────────────────
                 const params = {
-                    count: 200000,
-                    scale: 0.002,
-                    flowSpeed: 300,
-                    damping: 0.8,
-                    sink: 0,
-                    speedCap: 800,
-                    morphSpeed: 0.1,
+                    count: 20000,
+                    scale: 0.004, // noise frequency (per pixel)
+                    flowSpeed: 400, // swirl speed (px/s)
+                    pull: 250, // attraction accel near cursor (px/s^2)
+                    clusterRadius: 200, // cloud size (px)
+                    jitter: 400, // brownian kick (px/s)
+                    damping: 1.2,
+                    speedCap: 900,
+                    morphSpeed: 0.15,
                     particleSize: 1.4,
                     brightness: 0.45,
                 };
@@ -266,10 +267,12 @@
                 // ── Build the control panel ──────────────────────────────────────────────
                 const SLIDERS = [
                     { key: "count", label: "Particles", min: 1000, max: MAX_PARTICLES, step: 1000, fmt: (v) => (v / 1000).toFixed(0) + "k" },
-                    { key: "scale", label: "Field scale", min: 0.0003, max: 0.012, step: 0.0001, fmt: (v) => v.toFixed(4) },
+                    { key: "scale", label: "Noise scale", min: 0.001, max: 0.012, step: 0.0005, fmt: (v) => v.toFixed(4) },
                     { key: "flowSpeed", label: "Flow speed", min: 0, max: 1200, step: 10, fmt: (v) => v.toFixed(0) },
+                    { key: "clusterRadius", label: "Cloud size", min: 30, max: 600, step: 10, fmt: (v) => v.toFixed(0) },
+                    { key: "pull", label: "Attraction", min: 0, max: 800, step: 10, fmt: (v) => v.toFixed(0) },
+                    { key: "jitter", label: "Jitter", min: 0, max: 800, step: 10, fmt: (v) => v.toFixed(0) },
                     { key: "damping", label: "Damping", min: 0, max: 6, step: 0.1, fmt: (v) => v.toFixed(1) },
-                    { key: "sink", label: "Sink / bloom", min: -2, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) },
                     { key: "speedCap", label: "Speed cap", min: 50, max: 2000, step: 10, fmt: (v) => v.toFixed(0) },
                     { key: "morphSpeed", label: "Morph speed", min: 0, max: 1, step: 0.01, fmt: (v) => v.toFixed(2) },
                 ];
@@ -368,51 +371,21 @@
                     ],
                 });
 
-                // ── Input ────────────────────────────────────────────────────────────────
-                let mouseX = -99999;
-                let mouseY = -99999;
-                let attract = false;
+                // ── Input: cursor position (the cluster follows it) ──────────────────────
+                let mouseX = W * 0.5;
+                let mouseY = H * 0.5;
 
                 function onMove(cx, cy) {
                     mouseX = cx * devicePixelRatio;
                     mouseY = cy * devicePixelRatio;
                 }
 
-                canvas.addEventListener("mousemove", (e) =>
-                    onMove(e.clientX, e.clientY),
-                );
-                canvas.addEventListener("mousedown", () => {
-                    attract = true;
-                });
-                canvas.addEventListener("mouseup", () => {
-                    attract = false;
-                });
-                canvas.addEventListener("mouseleave", () => {
-                    mouseX = -99999;
-                    mouseY = -99999;
-                    attract = false;
-                });
+                window.addEventListener("mousemove", (e) => onMove(e.clientX, e.clientY));
                 canvas.addEventListener(
                     "touchmove",
-                    (e) => {
-                        e.preventDefault();
-                        onMove(e.touches[0].clientX, e.touches[0].clientY);
-                    },
+                    (e) => { e.preventDefault(); onMove(e.touches[0].clientX, e.touches[0].clientY); },
                     { passive: false },
                 );
-                canvas.addEventListener(
-                    "touchstart",
-                    (e) => {
-                        attract = true;
-                        onMove(e.touches[0].clientX, e.touches[0].clientY);
-                    },
-                    { passive: false },
-                );
-                canvas.addEventListener("touchend", () => {
-                    attract = false;
-                    mouseX = -99999;
-                    mouseY = -99999;
-                });
 
                 // ── Loop ─────────────────────────────────────────────────────────────────
                 let last = performance.now();
@@ -447,19 +420,19 @@
                     cuData[4] = params.scale;
                     cuData[5] = params.flowSpeed;
                     cuData[6] = params.damping;
-                    cuData[7] = params.sink;
+                    cuData[7] = params.pull;
                     cuData[8] = params.speedCap;
                     cuData[9] = params.morphSpeed;
                     cuData[10] = mouseX;
                     cuData[11] = mouseY;
-                    cuData[12] = attract ? 1 : 0;
+                    cuData[12] = params.clusterRadius * dpr;
+                    cuData[13] = params.jitter * dpr;
                     device.queue.writeBuffer(cuBuf, 0, cuData);
 
                     ruData[0] = W;
                     ruData[1] = H;
                     ruData[2] = params.particleSize * dpr;
                     ruData[3] = params.brightness;
-                    ruData[4] = now * 0.001;
                     device.queue.writeBuffer(ruBuf, 0, ruData);
 
                     const enc = device.createCommandEncoder();
